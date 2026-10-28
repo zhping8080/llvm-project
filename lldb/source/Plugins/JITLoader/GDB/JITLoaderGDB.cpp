@@ -196,13 +196,41 @@ void JITLoaderGDB::SetJITBreakpoint(lldb_private::ModuleList &module_list) {
   if (jit_addr == LLDB_INVALID_ADDRESS)
     return;
 
-  m_jit_descriptor_addr = GetSymbolAddress(
-      module_list, ConstString("__jit_debug_descriptor"), eSymbolTypeData);
+  // m_jit_descriptor_addr = GetSymbolAddress(
+  //     module_list, ConstString("__jit_debug_descriptor"), eSymbolTypeData);
+  // if (m_jit_descriptor_addr == LLDB_INVALID_ADDRESS) {
+  //   LLDB_LOGF(log, "JITLoaderGDB::%s failed to find JIT descriptor address",
+  //             __FUNCTION__);
+  //   return;
+  // }
+
+  // 优先从主可执行文件模块中查找，避免共享库同名符号干扰
+  Target &target = m_process->GetTarget();
+  ModuleSP exe_module = target.GetExecutableModule();
+  if (exe_module) {
+    SymbolContextList sc_list;
+    exe_module->FindSymbolsWithNameAndType(
+        ConstString("__jit_debug_descriptor"), eSymbolTypeData, sc_list);
+    if (sc_list.GetSize() > 0) {
+      SymbolContext sc;
+      sc_list.GetContextAtIndex(0, sc);
+      if (sc.symbol) {
+        Address addr = sc.symbol->GetAddress();
+        m_jit_descriptor_addr = addr.GetLoadAddress(&target);
+      }
+    }
+  }
+  // 如果主模块中未找到，再回退到全局模块列表
+  if (m_jit_descriptor_addr == LLDB_INVALID_ADDRESS) {
+    m_jit_descriptor_addr = GetSymbolAddress(
+        module_list, ConstString("__jit_debug_descriptor"), eSymbolTypeData);
+  }
   if (m_jit_descriptor_addr == LLDB_INVALID_ADDRESS) {
     LLDB_LOGF(log, "JITLoaderGDB::%s failed to find JIT descriptor address",
               __FUNCTION__);
     return;
   }
+  LLDB_LOGF(log, "JITLoaderGDB::%s success to find JIT descriptor address 0x%" PRIx64, __FUNCTION__, m_jit_descriptor_addr);
 
   LLDB_LOGF(log, "JITLoaderGDB::%s setting JIT breakpoint", __FUNCTION__);
 
@@ -304,7 +332,8 @@ bool JITLoaderGDB::ReadJITDescriptorImpl(bool all_entries) {
     jit_action = JIT_REGISTER_FN;
     jit_relevant_entry = (addr_t)jit_desc.first_entry;
   }
-
+  LLDB_LOGF(log, "JITLoaderGDB::%s registering JIT entry, jit_relevant_entry = 0x%" PRIx64,
+            __FUNCTION__, jit_relevant_entry);
   while (jit_relevant_entry != 0) {
     jit_code_entry<ptr_t> jit_entry;
     if (!ReadJITEntry(jit_relevant_entry, m_process, &jit_entry)) {
@@ -389,6 +418,8 @@ bool JITLoaderGDB::ReadJITDescriptorImpl(bool all_entries) {
       }
     } else if (jit_action == JIT_NOACTION) {
       // Nothing to do
+      LLDB_LOGF(log, "JITLoaderGDB::%s JIT_NOACTION entry at 0x%" PRIx64,
+                __FUNCTION__, symbolfile_addr);
     } else {
       assert(false && "Unknown jit action");
     }
